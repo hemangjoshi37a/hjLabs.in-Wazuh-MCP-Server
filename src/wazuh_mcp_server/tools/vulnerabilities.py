@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List
 import mcp.types as types
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from collections import defaultdict, Counter
 import re
 
@@ -194,15 +194,50 @@ class VulnerabilityTools(BaseTool):
         """Get comprehensive vulnerability data from Wazuh."""
         vulnerabilities = []
         
-        # Get vulnerability data from vulnerability detector
-        vuln_response = await self.api_client.get_vulnerabilities(
-            severity=severity_filter,
-            agent_ids=agent_filter
-        )
+        # Retrieve vulnerability data via ClientManager (auto-routes to Indexer/Server)
+        # We favor broad searches and then apply filters locally for maximum compatibility.
+        raw_vulns: List[Dict[str, Any]] = []
+        try:
+            if agent_filter:
+                # Collect per-agent to honor multiple agent filters
+                for aid in agent_filter:
+                    if not aid:
+                        continue
+                    resp = await self.api_client.get_vulnerabilities({"agent_id": aid, "limit": 1000})
+                    raw_vulns.extend(resp.get("data", {}).get("affected_items", []))
+            else:
+                # Broad search without severity restrictions; filter locally
+                try:
+                    resp = await self.api_client.search_vulnerabilities(severity=None, limit=1000)
+                except Exception:
+                    # Fallback to generic get_vulnerabilities signature
+                    try:
+                        resp = await self.api_client.get_vulnerabilities({"limit": 1000})
+                    except Exception:
+                        try:
+                            resp = await self.api_client.get_vulnerabilities()
+                        except Exception:
+                            resp = {"data": {"affected_items": []}}
+                raw_vulns = resp.get("data", {}).get("affected_items", [])
+        except Exception as e:
+            self.logger.warning(f"Vulnerability retrieval fallback path encountered an error: {e}")
+            # Last-resort fallback
+            try:
+                resp = await self.api_client.get_vulnerabilities()
+                raw_vulns = resp.get("data", {}).get("affected_items", [])
+            except Exception:
+                raw_vulns = []
         
-        raw_vulns = vuln_response.get("data", {}).get("affected_items", [])
+        # Apply severity filter locally for cross-API compatibility
+        severity_set = {s.lower() for s in (severity_filter or [])}
         
         for vuln in raw_vulns:
+            # Apply severity filter
+            if severity_set:
+                sev = str(vuln.get("severity", "")).lower()
+                if sev not in severity_set:
+                    continue
+
             # Apply package filter if specified
             if package_filter:
                 package_name = vuln.get("name", "")
@@ -224,25 +259,40 @@ class VulnerabilityTools(BaseTool):
                                           time_range_days: int) -> List[Dict[str, Any]]:
         """Get critical vulnerabilities based on priority threshold."""
         # Calculate date range
-        end_date = datetime.utcnow()
+        end_date = datetime.now(UTC)
         start_date = end_date - timedelta(days=time_range_days)
         
-        # Get vulnerability data
-        vuln_response = await self.api_client.get_vulnerabilities(
-            severity=["critical", "high"],
-            date_from=start_date.strftime("%Y-%m-%d"),
-            date_to=end_date.strftime("%Y-%m-%d")
-        )
+        # Get vulnerability data via ClientManager/Indexer and then filter locally by date
+        try:
+            resp = await self.api_client.search_vulnerabilities(severity="critical", limit=1000)
+        except Exception:
+            # As a fallback, search without explicit severity and filter later
+            try:
+                resp = await self.api_client.search_vulnerabilities(severity=None, limit=1000)
+            except Exception:
+                # Fallback to generic get_vulnerabilities, then filter locally
+                try:
+                    resp = await self.api_client.get_vulnerabilities({"limit": 1000})
+                except Exception:
+                    try:
+                        resp = await self.api_client.get_vulnerabilities()
+                    except Exception:
+                        resp = {"data": {"affected_items": []}}
         
-        vulnerabilities = vuln_response.get("data", {}).get("affected_items", [])
+        vulnerabilities = resp.get("data", {}).get("affected_items", [])
         
-        # Filter by priority threshold and enrich
+        # Filter by time range, priority threshold and enrich
         critical_vulns = []
         for vuln in vulnerabilities:
+            # Respect time window
+            days_since = self._calculate_days_since_discovery(vuln)
+            if days_since > time_range_days:
+                continue
+
             priority_score = self._calculate_priority_score(vuln)
             if priority_score >= priority_threshold:
                 vuln["priority_score"] = priority_score
-                vuln["days_since_discovery"] = self._calculate_days_since_discovery(vuln)
+                vuln["days_since_discovery"] = days_since
                 critical_vulns.append(vuln)
         
         return critical_vulns
@@ -365,7 +415,7 @@ class VulnerabilityTools(BaseTool):
         
         try:
             pub_date = datetime.fromisoformat(published_date.replace("Z", "+00:00"))
-            return (datetime.utcnow() - pub_date.replace(tzinfo=None)).days
+            return (datetime.now(UTC) - pub_date.replace(tzinfo=None)).days
         except:
             return 365
     

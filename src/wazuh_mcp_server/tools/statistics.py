@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List
 import mcp.types as types
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from collections import defaultdict, Counter
 
 from .base import BaseTool
@@ -126,7 +126,7 @@ class StatisticsTools(BaseTool):
                 "overview": {
                     "total_alerts": len(alerts),
                     "time_range_seconds": time_range,
-                    "analysis_timestamp": datetime.utcnow().isoformat()
+                    "analysis_timestamp": datetime.now(UTC).isoformat()
                 },
                 "statistics": self._calculate_alert_statistics(alerts),
                 "patterns": self._detect_alert_patterns(alerts),
@@ -155,14 +155,30 @@ class StatisticsTools(BaseTool):
             compare_previous = arguments.get("compare_previous", True)
             
             # Calculate time ranges
-            end_time = datetime.utcnow()
+            end_time = datetime.now(UTC)
             start_time = end_time - timedelta(weeks=weeks)
             
-            # Get statistics from API
-            stats_response = await self.api_client.get_manager_stats(
-                date_from=start_time.strftime("%Y-%m-%d"),
-                date_to=end_time.strftime("%Y-%m-%d")
-            )
+            # Get statistics with compatibility across ClientManager and API client
+            cm = getattr(self.server, "client_manager", None)
+            if hasattr(self.api_client, "get_weekly_stats"):
+                stats_response = await getattr(self.api_client, "get_weekly_stats")()
+            elif cm and hasattr(cm, "get_weekly_stats"):
+                stats_response = await cm.get_weekly_stats()
+            else:
+                # Fallback: derive minimal weekly stats from alerts and agents
+                time_range_seconds = weeks * 7 * 24 * 3600
+                alerts_resp = await self.api_client.get_alerts(limit=5000, time_range=time_range_seconds)
+                agents_resp = await self.api_client.get_agents()
+                alerts = alerts_resp.get("data", {}).get("affected_items", [])
+                agents = agents_resp.get("data", {}).get("affected_items", [])
+                stats_response = {
+                    "data": {
+                        "total_alerts": len(alerts),
+                        "daily_average": round(len(alerts) / max(1, weeks * 7), 2),
+                        "peak_day": "unknown",
+                        "agents_total": len(agents)
+                    }
+                }
             
             weekly_stats = {
                 "period": {
@@ -180,10 +196,24 @@ class StatisticsTools(BaseTool):
                 prev_end = start_time
                 prev_start = prev_end - timedelta(weeks=weeks)
                 
-                prev_response = await self.api_client.get_manager_stats(
-                    date_from=prev_start.strftime("%Y-%m-%d"),
-                    date_to=prev_end.strftime("%Y-%m-%d")
-                )
+                # Previous period comparison (try consolidated endpoint first)
+                cm = getattr(self.server, "client_manager", None)
+                if hasattr(self.api_client, "get_weekly_stats"):
+                    prev_response = await getattr(self.api_client, "get_weekly_stats")()
+                elif cm and hasattr(cm, "get_weekly_stats"):
+                    prev_response = await cm.get_weekly_stats()
+                else:
+                    # Minimal previous period stats as fallback
+                    time_range_seconds_prev = weeks * 7 * 24 * 3600
+                    prev_alerts_resp = await self.api_client.get_alerts(limit=5000, time_range=time_range_seconds_prev)
+                    prev_alerts = prev_alerts_resp.get("data", {}).get("affected_items", [])
+                    prev_response = {
+                        "data": {
+                            "total_alerts": len(prev_alerts),
+                            "daily_average": round(len(prev_alerts) / max(1, weeks * 7), 2),
+                            "peak_day": "unknown"
+                        }
+                    }
                 
                 weekly_stats["comparison"] = self._compare_periods(stats_response, prev_response)
             
@@ -203,8 +233,15 @@ class StatisticsTools(BaseTool):
         try:
             include_performance = arguments.get("include_performance", True)
             
-            # Get remoted stats
-            stats_response = await self.api_client.get_remoted_stats()
+            # Get remoted stats with compatibility
+            cm = getattr(self.server, "client_manager", None)
+            if hasattr(self.api_client, "get_remoted_stats"):
+                stats_response = await getattr(self.api_client, "get_remoted_stats")()
+            elif cm and hasattr(cm, "get_remoted_stats"):
+                stats_response = await cm.get_remoted_stats()
+            else:
+                # Fallback to generic manager stats
+                stats_response = await self.api_client.get_wazuh_stats("remoted", "stats")
             
             remoted_stats = {
                 "daemon_status": self._get_daemon_status(stats_response),
@@ -235,16 +272,19 @@ class StatisticsTools(BaseTool):
             include_file_analysis = arguments.get("include_file_analysis", True)
             
             if agent_id:
-                # Get stats for specific agent
-                stats_response = await self.api_client.get_agent_stats(
-                    agent_id=agent_id,
-                    component="logcollector"
-                )
+                # Get stats for specific agent with compatibility
+                if hasattr(self.api_client, "get_agent_stats"):
+                    stats_response = await self.api_client.get_agent_stats(agent_id)
+                else:
+                    cm = getattr(self.server, "client_manager", None)
+                    if cm and hasattr(cm, "get_agent_stats"):
+                        stats_response = await cm.get_agent_stats(agent_id)
+                    else:
+                        # Minimal fallback
+                        stats_response = {"data": {}}
             else:
-                # Get global log collector stats
-                stats_response = await self.api_client.get_manager_stats(
-                    component="logcollector"
-                )
+                # Get global log collector stats via ClientManager wrapper
+                stats_response = await self.server.client_manager.get_log_collector_stats()
             
             collector_stats = {
                 "overview": self._get_collector_overview(stats_response),

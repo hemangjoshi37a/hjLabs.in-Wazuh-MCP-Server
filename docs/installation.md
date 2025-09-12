@@ -1,6 +1,6 @@
 # Installation Guide
 
-This guide covers all installation methods for Wazuh MCP Server v2.1.0 across different platforms.
+This guide covers all installation methods for Wazuh MCP Server v2.1.2 across different platforms.
 
 ## 📋 Prerequisites
 
@@ -25,8 +25,8 @@ Choose your platform and run the appropriate installer:
 
 ### Universal Python Installer (Recommended)
 ```bash
-git clone https://github.com/your-repo/wazuh-mcp-server.git
-cd wazuh-mcp-server
+git clone https://github.com/gensecaihq/Wazuh-MCP-Server.git
+cd Wazuh-MCP-Server
 python3 installers/install.py
 ```
 
@@ -34,8 +34,8 @@ python3 installers/install.py
 
 #### Windows
 ```cmd
-git clone https://github.com/your-repo/wazuh-mcp-server.git
-cd wazuh-mcp-server
+git clone https://github.com/gensecaihq/Wazuh-MCP-Server.git
+cd Wazuh-MCP-Server
 installers\platform\install-windows.bat
 ```
 
@@ -115,8 +115,11 @@ cp .env.example .env
 
 ### 5. Test Installation
 ```bash
-# Run health check
-./bin/wazuh-mcp-server --health-check
+# Run connection validation
+python src/wazuh_mcp_server/main.py --check
+
+# Or run comprehensive health validation
+python validate_server_health.py
 ```
 
 ## ⚙️ Configuration
@@ -126,21 +129,38 @@ cp .env.example .env
 Edit `.env` with your Wazuh server details:
 
 ```bash
-# Wazuh Server Configuration
+# === REQUIRED SETTINGS ===
+# Wazuh Manager Connection
 WAZUH_HOST=your-wazuh-server.com
-WAZUH_PORT=55000
 WAZUH_USER=your-username
 WAZUH_PASS=your-password
 
-# SSL Configuration (recommended)
-VERIFY_SSL=true
-ALLOW_SELF_SIGNED=false
+# === OPTIONAL SETTINGS ===
+# Wazuh Manager Port (default: 55000)
+WAZUH_PORT=55000
 
-# Logging
-LOG_LEVEL=INFO
+# SSL Verification (default: true)
+# For production, this should be set to true
+VERIFY_SSL=false
 
-# FastMCP Configuration
+# === INDEXER SETTINGS (Optional) ===
+# Enable these only if you have Wazuh Indexer installed
+# Provides enhanced search, analytics, and vulnerability data
+# If Indexer is not accessible, disable these features:
+USE_INDEXER_FOR_ALERTS=false
+USE_INDEXER_FOR_VULNERABILITIES=false
+
+# WAZUH_INDEXER_HOST=your-wazuh-server.com
+# WAZUH_INDEXER_USER=admin
+# WAZUH_INDEXER_PASS=your-indexer-password
+# WAZUH_INDEXER_PORT=9200
+
+# === TRANSPORT MODE ===
+# How the MCP server communicates (default: stdio for Claude Desktop)
 MCP_TRANSPORT=stdio
+
+# === LOGGING ===
+LOG_LEVEL=INFO
 ```
 
 ### 2. Claude Desktop Configuration
@@ -175,19 +195,46 @@ Edit `~/.config/claude/claude_desktop_config.json`:
 
 ## ✅ Verification
 
-### 1. Health Check
+### 1. Connection Validation
 ```bash
-./bin/wazuh-mcp-server --health-check
+python src/wazuh_mcp_server/main.py --check
 ```
 
 Expected output:
 ```
-✅ python_version: Python 3.11.x
-✅ dependencies: All dependencies available
-✅ config_loading: Configuration loaded successfully
-✅ wazuh_connectivity: Connected to Wazuh server at your-server:55000
-✅ fastmcp_setup: FastMCP instance created
-🎯 Overall health score: 100.0%
+🔍 Validating Wazuh MCP Server configuration and connectivity...
+📡 Testing Wazuh Manager: your-server.com:55000
+   ✅ CONNECTED & AUTHENTICATED
+   📋 API Version: 4.9.2
+   🔐 Authentication: ✅ SUCCESS
+
+✅ Configuration and connectivity check passed!
+   Manager connection working - MCP server should be functional
+```
+
+### 2. Comprehensive Health Check
+```bash
+python validate_server_health.py
+```
+
+Expected output:
+```
+🏥 Starting comprehensive Wazuh MCP Server health validation...
+📋 Testing Configuration...
+   ✅ Configuration loaded: your-server.com:55000
+🔗 Testing Manager API Connectivity...
+   ✅ Connected to https://your-server.com:55000
+🔐 Testing Authentication...
+   ✅ Authentication successful for user: your-username
+🎯 Testing Core API Endpoints...
+   ✅ API information: Working
+   ✅ Agent management: Working
+   ✅ Detection rules: Working
+⚡ Testing Performance...
+   ✅ API response time: 0.26s (good)
+
+🟢 OVERALL STATUS: HEALTHY
+📊 Test Results: 4/5 passed (80.0%)
 ```
 
 ### 2. Test Connection
@@ -266,6 +313,51 @@ chmod +x installers/platform/*.sh
 - **SELinux**: Check SELinux policies if connection issues
 - **Firewall**: Ensure outbound HTTPS (443) and Wazuh port (55000) are open
 - **AppArmor**: May need to configure AppArmor profiles
+
+### Wazuh-Specific Issues
+
+#### SSL/TLS Connection Issues
+If you see SSL verification errors:
+```bash
+# For development/testing, disable SSL verification in .env:
+VERIFY_SSL=false
+
+# For production, ensure proper SSL certificates or use:
+VERIFY_SSL=true
+ALLOW_SELF_SIGNED=true
+```
+
+#### Protocol Issues
+The server always uses HTTPS for Wazuh API connections. If you see HTTP protocol errors:
+- Ensure your Wazuh server supports HTTPS on port 55000
+- Check firewall rules allow HTTPS traffic
+- Verify SSL certificates are properly configured
+
+#### Indexer Connection Issues
+If you see Indexer timeout errors:
+```bash
+# Disable Indexer features in .env if not accessible:
+USE_INDEXER_FOR_ALERTS=false
+USE_INDEXER_FOR_VULNERABILITIES=false
+
+# Comment out Indexer settings:
+# WAZUH_INDEXER_HOST=your-server.com
+# WAZUH_INDEXER_USER=admin
+# WAZUH_INDEXER_PASS=your-password
+```
+
+#### Authentication Issues
+If authentication fails:
+- Verify credentials are correct in .env file
+- Ensure the Wazuh user has API access permissions
+- Check if the user account is not locked or expired
+- Test credentials manually: `curl -u username:password https://your-server:55000/security/user/authenticate`
+
+#### "Degraded Mode" Warnings
+If you see "Running in degraded mode" warnings:
+- This is normal when Indexer is not accessible
+- The server will work in Manager-only mode with full functionality
+- All core features (agents, alerts, rules) remain available
 
 ## 🔄 Upgrading
 

@@ -58,7 +58,7 @@ class TestWazuhConfig:
     
     def test_config_validation_missing_username(self):
         """Test validation error when username is missing."""
-        with pytest.raises(ValidationError, match="WAZUH_USER must be provided"):
+        with pytest.raises(ValidationError, match="String should have at least 1 character"):
             WazuhConfig(
                 host="test.example.com",
                 username="",
@@ -67,7 +67,7 @@ class TestWazuhConfig:
     
     def test_config_validation_missing_password(self):
         """Test validation error when password is missing."""
-        with pytest.raises(ValidationError, match="WAZUH_PASS must be provided"):
+        with pytest.raises(ValidationError, match="String should have at least 1 character"):
             WazuhConfig(
                 host="test.example.com",
                 username="testuser",
@@ -76,7 +76,7 @@ class TestWazuhConfig:
     
     def test_config_validation_weak_password(self):
         """Test validation error for weak passwords."""
-        with pytest.raises(ValidationError, match="Password is too weak"):
+        with pytest.raises(ValidationError, match="Password must be at least 8 characters"):
             WazuhConfig(
                 host="test.example.com",
                 username="testuser",

@@ -104,21 +104,43 @@ class ConnectionValidator:
             'error': None
         }
         
-        # Test HTTPS first
-        https_result = await self._test_https_connection(
-            self.config.host, self.config.port
-        )
+        # Wazuh API server always uses HTTPS, regardless of SSL verification settings
+        protocol = "https"
+        result['protocol'] = protocol
         
-        if https_result['success']:
-            result.update(https_result)
-            result['protocol'] = 'https'
-            
-            # Test API authentication
+        # If SSL is disabled, we'll directly test the API with HTTP
+        if not self.config.verify_ssl:
             auth_result = await self._test_api_authentication()
             result['auth_success'] = auth_result.get('success', False)
             result['api_version'] = auth_result.get('version')
-            if not auth_result.get('success'):
+            
+            # If authentication succeeds, connection is reachable
+            if auth_result.get('success'):
+                result['reachable'] = True
+                result['ssl_valid'] = False
+                result['self_signed'] = False
+            else:
                 result['error'] = auth_result.get('error')
+        else:
+            # Test HTTPS first
+            https_result = await self._test_https_connection(
+                self.config.host, self.config.port
+            )
+            
+            if https_result['success']:
+                result.update(https_result)
+                result['protocol'] = 'https'
+                
+                # Test API authentication
+                auth_result = await self._test_api_authentication()
+                result['auth_success'] = auth_result.get('success', False)
+                result['api_version'] = auth_result.get('version')
+                
+                # If authentication succeeds, connection is reachable
+                if auth_result.get('success'):
+                    result['reachable'] = True
+                else:
+                    result['error'] = auth_result.get('error')
         
         return result
     
@@ -133,20 +155,43 @@ class ConnectionValidator:
             'error': None
         }
         
-        # Test HTTPS connection
+        # Wazuh Indexer API always uses HTTPS, regardless of SSL verification settings
+        protocol = "https"
+        result['protocol'] = protocol
+        
+        # Test connection with appropriate protocol
         https_result = await self._test_https_connection(
             self.config.indexer_host, self.config.indexer_port
         )
         
-        if https_result['success']:
+        # If SSL is disabled, we'll directly test the indexer API with HTTP
+        if not self.config.indexer_verify_ssl:
+            cluster_result = await self._test_indexer_api()
+            result['cluster_status'] = cluster_result.get('status')
+            result['ssl_valid'] = False
+            
+            # If cluster API succeeds, connection is reachable
+            if cluster_result.get('success'):
+                result['reachable'] = True
+                result['self_signed'] = False
+            else:
+                result['error'] = cluster_result.get('error')
+        elif https_result['success']:
             result.update(https_result)
             result['protocol'] = 'https'
             
             # Test Indexer API
             cluster_result = await self._test_indexer_api()
             result['cluster_status'] = cluster_result.get('status')
-            if not cluster_result.get('success'):
+            
+            # If cluster API succeeds, connection is reachable
+            if cluster_result.get('success'):
+                result['reachable'] = True
+            else:
                 result['error'] = cluster_result.get('error')
+        else:
+            # If HTTPS connection fails, record the error
+            result['error'] = https_result.get('error', 'HTTPS connection failed')
         
         return result
     
@@ -189,7 +234,7 @@ class ConnectionValidator:
         return result
     
     async def _test_api_authentication(self) -> Dict:
-        """Test Wazuh API authentication."""
+        """Test Wazuh API authentication using working Basic Auth method."""
         result = {'success': False, 'error': None, 'version': None}
         
         # Create SSL context based on configuration
@@ -202,19 +247,37 @@ class ConnectionValidator:
         
         try:
             async with aiohttp.ClientSession(connector=connector) as session:
-                # Test authentication endpoint
+                # Test authentication endpoint using working Basic Auth method
                 auth_url = f"{self.config.base_url}/security/user/authenticate"
-                auth = aiohttp.BasicAuth(self.config.username, self.config.password)
                 
-                async with session.post(auth_url, auth=auth) as response:
+                # Create Basic Auth header manually (the working method)
+                import base64
+                credentials = f"{self.config.username}:{self.config.password}"
+                basic_auth = base64.b64encode(credentials.encode()).decode('ascii')
+                headers = {
+                    "Authorization": f"Basic {basic_auth}",
+                    "Content-Type": "application/json"
+                }
+                
+                # Use GET request with Basic Auth header (the working method)
+                async with session.get(auth_url, headers=headers, timeout=10) as response:
                     if response.status == 200:
                         result['success'] = True
-                        # Get API version
-                        version_url = f"{self.config.base_url}/"
-                        async with session.get(version_url, headers={'Authorization': f'Bearer {(await response.json()).get("token", "")}'}) as version_response:
-                            if version_response.status == 200:
-                                version_data = await version_response.json()
-                                result['version'] = version_data.get('data', {}).get('api_version')
+                        response_data = await response.json()
+                        token = response_data.get('data', {}).get('token')
+                        
+                        # Get API version if token is available
+                        if token:
+                            version_url = f"{self.config.base_url}/"
+                            version_headers = {'Authorization': f'Bearer {token}'}
+                            try:
+                                async with session.get(version_url, headers=version_headers, timeout=10) as version_response:
+                                    if version_response.status == 200:
+                                        version_data = await version_response.json()
+                                        result['version'] = version_data.get('data', {}).get('api_version')
+                            except Exception:
+                                # Version check is optional
+                                pass
                     else:
                         result['error'] = f"Authentication failed: HTTP {response.status}"
         
@@ -224,28 +287,37 @@ class ConnectionValidator:
         return result
     
     async def _test_indexer_api(self) -> Dict:
-        """Test Wazuh Indexer API."""
+        """Test Wazuh Indexer API using working Basic Auth method."""
         result = {'success': False, 'error': None, 'status': None}
         
         # Create SSL context
         ssl_context = ssl.create_default_context()
-        if not self.config.verify_ssl:
+        if not self.config.indexer_verify_ssl:
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
         
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         
         try:
-            async with aiohttp.ClientSession(connector=connector) as session:
-                indexer_url = f"https://{self.config.indexer_host}:{self.config.indexer_port}"
-                auth = aiohttp.BasicAuth(
-                    getattr(self.config, 'indexer_username', self.config.username),
-                    getattr(self.config, 'indexer_password', self.config.password)
-                )
+            protocol = "https"  # Wazuh Indexer API always uses HTTPS
+            indexer_url = f"{protocol}://{self.config.indexer_host}:{self.config.indexer_port}"
                 
+            # Use manual Basic Auth header (consistent with working method)
+            import base64
+            indexer_user = getattr(self.config, 'indexer_username', self.config.username)
+            indexer_pass = getattr(self.config, 'indexer_password', self.config.password)
+            credentials = f"{indexer_user}:{indexer_pass}"
+            basic_auth = base64.b64encode(credentials.encode()).decode('ascii')
+            headers = {
+                "Authorization": f"Basic {basic_auth}",
+                "Content-Type": "application/json"
+            }
+                
+            # Create session with SSL context
+            async with aiohttp.ClientSession(connector=connector) as session:
                 # Test cluster health
                 health_url = f"{indexer_url}/_cluster/health"
-                async with session.get(health_url, auth=auth) as response:
+                async with session.get(health_url, headers=headers, timeout=10) as response:
                     if response.status == 200:
                         result['success'] = True
                         health_data = await response.json()
@@ -259,7 +331,7 @@ class ConnectionValidator:
         return result
     
     def _print_connection_result(self, service: str, result: Dict):
-        """Print formatted connection result."""
+        """Print formatted connection result with detailed debugging."""
         if result['reachable']:
             if _supports_unicode():
                 status = "✅ CONNECTED"
@@ -269,7 +341,7 @@ class ConnectionValidator:
                 status += " & AUTHENTICATED"
         else:
             if _supports_unicode():
-                status = "❌ FAILED" 
+                status = "❌ FAILED"
             else:
                 status = "[FAILED]"
         
@@ -288,9 +360,18 @@ class ConnectionValidator:
             
             if result.get('cluster_status'):
                 _safe_print(f"   📊 Cluster Status: {result['cluster_status']}")
+                
+            # Show authentication status
+            if 'auth_success' in result:
+                auth_status = "✅ SUCCESS" if result['auth_success'] else "❌ FAILED"
+                _safe_print(f"   🔐 Authentication: {auth_status}")
         
         if result.get('error'):
             _safe_print(f"   ❗ Error: {result['error']}")
+            
+        # Debug: Show all result details
+        _safe_print(f"   🐛 Debug - Result keys: {list(result.keys())}")
+        _safe_print(f"   🐛 Debug - Full result: {result}")
         
         _safe_print("")
     
@@ -368,9 +449,13 @@ async def main():
         _safe_print(f"   Manager: {manager_icon}")
         _safe_print(f"   Indexer: {indexer_icon}")
         
-        # Exit with appropriate code
+        # Exit with appropriate code - success if manager is reachable
+        # (indexer is optional as many installations don't expose port 9200)
         if results['manager']['reachable']:
             _safe_print("\n🎉 Validation completed successfully!")
+            _safe_print("   Manager connection working - MCP server should be functional")
+            if not results['indexer']['reachable']:
+                _safe_print("   Note: Indexer not accessible (this is normal for many installations)")
             return 0
         else:
             _safe_print("\n❌ Validation failed - check configuration and network connectivity")

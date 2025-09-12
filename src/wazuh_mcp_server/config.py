@@ -235,7 +235,9 @@ class WazuhConfig(BaseModel):
     @property
     def base_url(self) -> str:
         """Get the base URL for Wazuh API."""
-        return f"https://{self.host}:{self.port}"
+        # Wazuh API server always uses HTTPS, regardless of SSL verification settings
+        protocol = "https"
+        return f"{protocol}://{self.host}:{self.port}"
     
     @staticmethod
     def _parse_bool(value: Optional[str]) -> bool:
@@ -273,10 +275,10 @@ class WazuhConfig(BaseModel):
     def from_env(cls) -> 'WazuhConfig':
         """Create configuration from environment variables."""
         try:
-            # Indexer settings with fallback to server settings
-            indexer_host = os.getenv("WAZUH_INDEXER_HOST") or os.getenv("WAZUH_HOST")
-            indexer_username = os.getenv("WAZUH_INDEXER_USER") or os.getenv("WAZUH_USER")
-            indexer_password = os.getenv("WAZUH_INDEXER_PASS") or os.getenv("WAZUH_PASS")
+            # Indexer settings - only use if explicitly configured (no fallback)
+            indexer_host = os.getenv("WAZUH_INDEXER_HOST")
+            indexer_username = os.getenv("WAZUH_INDEXER_USER")
+            indexer_password = os.getenv("WAZUH_INDEXER_PASS")
             indexer_verify_ssl = os.getenv("WAZUH_INDEXER_VERIFY_SSL")
             if indexer_verify_ssl is None:
                 indexer_verify_ssl = cls._parse_bool(os.getenv("VERIFY_SSL", "false"))

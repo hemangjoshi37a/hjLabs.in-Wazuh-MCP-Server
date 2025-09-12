@@ -40,7 +40,9 @@ class WazuhIndexerClient:
         self.password = getattr(config, 'indexer_password', config.password)
         self.verify_ssl = getattr(config, 'indexer_verify_ssl', config.verify_ssl)
         
-        self.base_url = f"https://{self.host}:{self.port}"
+        # Wazuh Indexer API always uses HTTPS, regardless of SSL verification settings
+        protocol = "https"
+        self.base_url = f"{protocol}://{self.host}:{self.port}"
         
         # Initialize field mapper for schema compatibility
         wazuh_version = getattr(config, 'wazuh_version', None)
@@ -142,7 +144,13 @@ class WazuhIndexerClient:
         """Async context manager exit with proper cleanup."""
         if self.session:
             await self.session.close()
+            self.session = None
             logger.debug("Wazuh Indexer client session closed")
+    
+    async def _ensure_session(self):
+        """Ensure aiohttp session exists and is open."""
+        if self.session is None or getattr(self.session, "closed", False):
+            await self._create_session()
     
     async def _create_session(self):
         """Create aiohttp session with production-grade SSL configuration."""
@@ -184,6 +192,7 @@ class WazuhIndexerClient:
         async def _make_request() -> Dict[str, Any]:
             # Rate limit requests
             await global_rate_limiter.enforce_rate_limit("wazuh_indexer")
+            await self._ensure_session()
             
             url = urljoin(self.base_url, endpoint)
             request_id = f"indexer_req_{int(time.time() * 1000)}"
@@ -298,13 +307,18 @@ class WazuhIndexerClient:
     
     @log_performance
     async def search_alerts(
-        self, 
-        limit: int = 100, 
+        self,
+        limit: int = 100,
         offset: int = 0,
-        level: Optional[int] = None, 
+        level: Optional[int] = None,
         sort: str = "-timestamp",
         time_range: Optional[int] = None,
-        agent_id: Optional[str] = None
+        agent_id: Optional[str] = None,
+        rule_id: Optional[str] = None,
+        query: Optional[str] = None,
+        timestamp_gte: Optional[str] = None,
+        timestamp_lte: Optional[str] = None,
+        level_gte: bool = False
     ) -> Dict[str, Any]:
         """Search alerts in Wazuh Indexer with production-grade field mapping."""
         
@@ -341,14 +355,29 @@ class WazuhIndexerClient:
         # Add filters using field mapper
         if level is not None:
             rule_level_field = self.field_mapper.map_server_to_indexer_field("rule.level", "alert")
+            if level_gte:
+                query["query"]["bool"]["filter"].append({
+                    "range": {rule_level_field: {"gte": level}}
+                })
+            else:
+                query["query"]["bool"]["filter"].append({
+                    "term": {rule_level_field: level}
+                })
+
+        # Time filters: prefer explicit gte/lte if provided, else use relative time_range
+        timestamp_field = self.field_mapper.map_server_to_indexer_field("timestamp", "alert")
+        if timestamp_gte or timestamp_lte:
+            range_body: Dict[str, Any] = {}
+            if timestamp_gte:
+                range_body["gte"] = timestamp_gte
+            if timestamp_lte:
+                range_body["lte"] = timestamp_lte
             query["query"]["bool"]["filter"].append({
-                "term": {rule_level_field: level}
+                "range": {timestamp_field: range_body}
             })
-        
-        if time_range:
+        elif time_range:
             end_time = datetime.utcnow()
             start_time = end_time - timedelta(seconds=time_range)
-            timestamp_field = self.field_mapper.map_server_to_indexer_field("timestamp", "alert")
             query["query"]["bool"]["filter"].append({
                 "range": {
                     timestamp_field: {
@@ -358,12 +387,30 @@ class WazuhIndexerClient:
                     }
                 }
             })
-        
+
         if agent_id:
             clean_agent_id = sanitize_string(agent_id, 20)
             agent_id_field = self.field_mapper.map_server_to_indexer_field("agent.id", "alert")
             query["query"]["bool"]["filter"].append({
                 "term": {f"{agent_id_field}.keyword": clean_agent_id}  # Use keyword field for exact match
+            })
+
+        if rule_id:
+            clean_rule_id = sanitize_string(rule_id, 50)
+            rule_id_field = self.field_mapper.map_server_to_indexer_field("rule.id", "alert")
+            query["query"]["bool"]["filter"].append({
+                "term": {f"{rule_id_field}": clean_rule_id}
+            })
+
+        if query is not None and str(query).strip():
+            # Add query_string for flexible matching
+            query_string_value = str(query).strip()
+            query["query"]["bool"]["must"].append({
+                "query_string": {
+                    "query": query_string_value,
+                    "analyze_wildcard": True,
+                    "default_field": "*"
+                }
             })
         
         # If no filters, use match_all
@@ -418,9 +465,10 @@ class WazuhIndexerClient:
     
     @log_performance
     async def search_vulnerabilities(
-        self, 
+        self,
         agent_id: Optional[str] = None,
         cve_id: Optional[str] = None,
+        severity: Optional[str] = None,
         limit: int = 100
     ) -> Dict[str, Any]:
         """Search vulnerabilities in Wazuh Indexer."""
@@ -452,6 +500,13 @@ class WazuhIndexerClient:
             clean_cve_id = sanitize_string(cve_id, 50)
             query["query"]["bool"]["must"].append({
                 "term": {"vulnerability.id": clean_cve_id}
+            })
+
+        if severity:
+            clean_sev = sanitize_string(severity, 20).lower()
+            # Use keyword for exact match when available
+            query["query"]["bool"]["must"].append({
+                "term": {"vulnerability.severity.keyword": clean_sev}
             })
         
         # If no filters, match all

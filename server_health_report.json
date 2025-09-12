@@ -1,0 +1,70 @@
+{
+  "timestamp": "2025-09-12T13:42:13.556788",
+  "overall_status": "healthy",
+  "tests": {
+    "configuration": {
+      "status": "pass",
+      "details": {
+        "host": "wazuh.gadgetaccess.com",
+        "port": 55000,
+        "ssl_verification": false,
+        "indexer_disabled": true
+      }
+    },
+    "manager_connectivity": {
+      "status": "pass",
+      "details": {
+        "base_url": "https://wazuh.gadgetaccess.com:55000",
+        "protocol": "https"
+      }
+    },
+    "authentication": {
+      "status": "pass",
+      "details": {
+        "username": "wazuh",
+        "token_valid": true
+      }
+    },
+    "core_endpoints": {
+      "api_info": {
+        "status": "pass",
+        "description": "API information",
+        "response_size": 269
+      },
+      "agents": {
+        "status": "pass",
+        "description": "Agent management",
+        "response_size": 803
+      },
+      "alerts": {
+        "status": "warn",
+        "description": "Security alerts",
+        "message": "No data returned"
+      },
+      "rules": {
+        "status": "pass",
+        "description": "Detection rules",
+        "response_size": 508
+      }
+    },
+    "performance": {
+      "status": "pass",
+      "details": {
+        "api_response_time_ms": 2111.49,
+        "performance_rating": "slow"
+      }
+    }
+  },
+  "summary": {
+    "total_tests": 5,
+    "passed": 4,
+    "failed": 0,
+    "warnings": 0,
+    "success_rate": 80.0
+  },
+  "recommendations": [
+    "Consider enabling SSL verification for production use",
+    "Use a custom username instead of default credentials",
+    "API response time is slow - check network connectivity"
+  ]
+}

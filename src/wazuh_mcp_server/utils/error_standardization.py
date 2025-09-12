@@ -3,7 +3,7 @@
 import functools
 import traceback
 from typing import Any, Callable, Dict, List, Optional, Type, Union
-from datetime import datetime
+from datetime import datetime, UTC
 import logging
 
 try:
@@ -29,7 +29,7 @@ class StandardErrorResponse:
     def __init__(self, error: Exception, context: Optional[Dict[str, Any]] = None):
         self.error = error
         self.context = context or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(UTC)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format for JSON responses."""
@@ -316,7 +316,7 @@ class ErrorAggregator:
             "error_type": type(error).__name__,
             "error_message": str(error),
             "context": context or {},
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(UTC).isoformat()
         })
     
     def has_errors(self) -> bool:

@@ -8,9 +8,10 @@ STDIO transport only - no HTTP/remote capabilities.
 
 import os
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, AsyncGenerator
 from datetime import datetime, timedelta
 import json
+from contextlib import asynccontextmanager
 
 try:
     from fastmcp import FastMCP
@@ -37,13 +38,27 @@ from wazuh_mcp_server.analyzers import SecurityAnalyzer, ComplianceAnalyzer
 from wazuh_mcp_server.utils import setup_logging, get_logger
 from wazuh_mcp_server.__version__ import __version__
 
+# Export compatibility class for tests importing from wazuh_mcp_server.server
+from wazuh_mcp_server.main import WazuhMCPServer
 # Initialize logger
 logger = get_logger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: "FastMCP") -> AsyncGenerator[None, None]:
+    """
+    Asynchronous context manager to handle the server's lifespan events.
+    This manager ensures that the server is properly initialized and shut down.
+    """
+    await initialize_server()
+    yield
+    if client_manager:
+        await client_manager.__aexit__(None, None, None)
 
 # Initialize FastMCP app
 mcp = FastMCP(
     name="Wazuh MCP Server",
-    version="2.1.2"
+    version=__version__,
+    lifespan=lifespan
 )
 
 # Global instances
@@ -81,7 +96,7 @@ async def initialize_server():
         logger.info("🚀 Initializing Wazuh MCP Server v2.1.0 with FastMCP")
         
         # Load configuration
-        config = WazuhConfig()
+        config = WazuhConfig.from_env()
         logger.info(f"📋 Loaded configuration for Wazuh host: {config.host}:{config.port}")
         
         # Run comprehensive health checks
@@ -97,7 +112,13 @@ async def initialize_server():
         
         # Initialize client manager
         client_manager = WazuhClientManager(config)
-        logger.info("🔗 Wazuh client manager initialized")
+        # Proactively open HTTP sessions for server and indexer clients
+        try:
+            await client_manager.__aenter__()
+            logger.info("🔗 Wazuh client manager initialized and sessions opened")
+        except Exception as e:
+            logger.warning(f"Could not pre-open client sessions (will lazy-init later): {e}")
+            logger.info("🔗 Wazuh client manager initialized")
         
         # Initialize analyzers
         security_analyzer = SecurityAnalyzer(client_manager)
@@ -146,8 +167,39 @@ async def get_wazuh_alerts(
             timestamp_start=timestamp_start,
             timestamp_end=timestamp_end
         )
+
+        # Map tool-friendly args to ClientManager.get_alerts signature
+        params: Dict[str, Any] = {
+            "limit": query.limit,
+            "offset": 0,
+            "sort": "-timestamp"
+        }
         
-        alerts = await client_manager.get_alerts(query.dict(exclude_none=True))
+        # Normalize level (supports "10+" or "12")
+        if query.level is not None:
+            try:
+                lvl_str = str(query.level).strip()
+                plus = lvl_str.endswith("+")
+                lvl = int(lvl_str[:-1]) if plus else int(lvl_str)
+                params["level"] = lvl
+                if plus:
+                    params["level_gte"] = True
+            except Exception:
+                # Ignore invalid level formats to avoid breaking the call
+                pass
+
+        # Prefer explicit timestamp range for Indexer routing
+        if query.timestamp_start and query.timestamp_end:
+            params["timestamp_gte"] = query.timestamp_start
+            params["timestamp_lte"] = query.timestamp_end
+
+        # Optional filters passthrough
+        if query.agent_id:
+            params["agent_id"] = query.agent_id
+        if query.rule_id:
+            params["rule_id"] = query.rule_id
+
+        alerts = await client_manager.get_alerts(**params)
         return json.dumps(alerts, indent=2)
         
     except Exception as e:
@@ -180,8 +232,18 @@ async def get_wazuh_agents(
             status=status,
             limit=limit
         )
-        
-        agents = await client_manager.get_agents(query.dict(exclude_none=True))
+    
+        # Bridge AgentQuery -> client_manager.get_agents signature
+        gm_params: Dict[str, Any] = {
+            "limit": query.limit
+        }
+        if query.status:
+            gm_params["status"] = query.status
+        # If a specific agent_id is provided, pass via agents_list filter
+        if query.agent_id:
+            gm_params["agents_list"] = [query.agent_id]
+    
+        agents = await client_manager.get_agents(**gm_params)
         return json.dumps(agents, indent=2)
         
     except Exception as e:
@@ -548,7 +610,7 @@ async def get_agent_processes(
         if not client_manager:
             return json.dumps({"error": "Server not initialized"})
             
-        processes = await client_manager.get_agent_processes(agent_id, limit)
+        processes = await client_manager.get_agent_processes(agent_id=agent_id, limit=limit)
         return json.dumps(processes, indent=2)
         
     except Exception as e:
@@ -574,7 +636,7 @@ async def get_agent_ports(
         if not client_manager:
             return json.dumps({"error": "Server not initialized"})
             
-        ports = await client_manager.get_agent_ports(agent_id, limit)
+        ports = await client_manager.get_agent_ports(agent_id=agent_id, limit=limit)
         return json.dumps(ports, indent=2)
         
     except Exception as e:

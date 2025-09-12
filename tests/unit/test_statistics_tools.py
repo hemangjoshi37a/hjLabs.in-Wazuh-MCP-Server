@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 from wazuh_mcp_server.tools.statistics import StatisticsTools
 
@@ -58,13 +58,13 @@ class TestStatisticsTools:
                     {
                         "rule": {"id": "5501", "level": 7},
                         "agent": {"id": "001"},
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "data": {"srcip": "192.168.1.1", "srcuser": "admin"}
                     },
                     {
                         "rule": {"id": "5502", "level": 10},
                         "agent": {"id": "002"},
-                        "timestamp": (datetime.utcnow() - timedelta(minutes=30)).isoformat(),
+                        "timestamp": (datetime.now(UTC) - timedelta(minutes=30)).isoformat(),
                         "data": {"srcip": "192.168.1.2", "process": "sshd"}
                     }
                 ]
@@ -79,7 +79,7 @@ class TestStatisticsTools:
         })
         
         # Verify result structure
-        assert result["status"] == "success"
+        assert result["success"] == True
         assert "data" in result
         data = result["data"]
         
@@ -120,7 +120,7 @@ class TestStatisticsTools:
         })
         
         # Verify result structure
-        assert result["status"] == "success"
+        assert result["success"] == True
         assert "data" in result
         data = result["data"]
         
@@ -151,7 +151,7 @@ class TestStatisticsTools:
         })
         
         # Verify comparison was performed
-        assert result["status"] == "success"
+        assert result["success"] == True
         data = result["data"]
         assert "comparison" in data
         assert data["comparison"]["alert_change_percent"] == 25.0
@@ -188,7 +188,7 @@ class TestStatisticsTools:
         })
         
         # Verify result structure
-        assert result["status"] == "success"
+        assert result["success"] == True
         data = result["data"]
         
         assert "daemon_status" in data
@@ -234,7 +234,7 @@ class TestStatisticsTools:
         })
         
         # Verify result structure
-        assert result["status"] == "success"
+        assert result["success"] == True
         data = result["data"]
         
         assert "overview" in data
@@ -267,7 +267,7 @@ class TestStatisticsTools:
         })
         
         # Verify result
-        assert result["status"] == "success"
+        assert result["success"] == True
         assert result["metadata"]["agent_id"] == "001"
         
         # Should not have file analysis
@@ -283,7 +283,7 @@ class TestStatisticsTools:
         """Test anomaly detection in alerts."""
         # Create test data with spike
         alerts = []
-        base_time = datetime.utcnow()
+        base_time = datetime.now(UTC)
         
         # Normal hours (10 alerts each)
         for hour in range(20):
@@ -312,17 +312,17 @@ class TestStatisticsTools:
             {
                 "rule": {"id": "5501", "level": 7},
                 "agent": {"id": "001"},
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.now(UTC).isoformat() + "Z"
             },
             {
                 "rule": {"id": "5502", "level": 10},
                 "agent": {"id": "001"},
-                "timestamp": (datetime.utcnow() - timedelta(hours=1)).isoformat() + "Z"
+                "timestamp": (datetime.now(UTC) - timedelta(hours=1)).isoformat() + "Z"
             },
             {
                 "rule": {"id": "5501", "level": 7},
                 "agent": {"id": "002"},
-                "timestamp": (datetime.utcnow() - timedelta(hours=2)).isoformat() + "Z"
+                "timestamp": (datetime.now(UTC) - timedelta(hours=2)).isoformat() + "Z"
             }
         ]
         
@@ -382,7 +382,7 @@ class TestStatisticsTools:
         result = await statistics_tools.handle_alert_summary_advanced({})
         
         # Should return error response
-        assert result["status"] == "error"
+        assert result["success"] == False
         assert "error" in result
         assert result["error"]["type"] == "Exception"
         assert "API Error" in result["error"]["message"]

@@ -250,7 +250,7 @@ class AgentTools(BaseTool):
             stats_response = await self.api_client.get_agent_stats(agent_id)
             agent_stats = stats_response.get("data", {})
             
-            # Recent alerts for this agent
+            # Recent alerts for this agent (auto-routed via API client/ClientManager)
             alerts_response = await self.api_client.get_alerts(
                 agent_id=agent_id,
                 limit=100,

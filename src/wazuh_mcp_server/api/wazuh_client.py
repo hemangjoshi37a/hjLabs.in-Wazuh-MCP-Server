@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from urllib.parse import urljoin
 import aiohttp
+import base64
 
 # Clean absolute imports within the package
 from wazuh_mcp_server.config import WazuhConfig
@@ -54,6 +55,9 @@ except ImportError:
     
     error_recovery_manager = _MinimalErrorRecovery()
 
+# SSL/TLS configuration manager for secure connections
+from wazuh_mcp_server.utils.ssl_config import SSLConfigurationManager, SSLConfig
+
 logger = get_logger(__name__)
 
 
@@ -65,16 +69,30 @@ class WazuhAPIClient:
         self.jwt_token: Optional[str] = None
         self.jwt_expiration: Optional[datetime] = None
         self.session: Optional[aiohttp.ClientSession] = None
-        self.base_url = f"{config.base_url}/{config.api_version}"
+        # Wazuh Server API does not include the API version in the URL path
+        # Example: https://<host>:55000/security/user/authenticate
+        self.base_url = f"{config.base_url}"
         
         # Configure rate limiting
         global_rate_limiter.configure_endpoint(
-            "wazuh_auth", 
+            "wazuh_auth",
             RateLimitConfig(max_requests=10, time_window=60)  # 10 auth requests per minute
         )
         global_rate_limiter.configure_endpoint(
-            "wazuh_api", 
+            "wazuh_api",
             RateLimitConfig(max_requests=100, time_window=60)  # 100 API requests per minute
+        )
+
+        # Initialize SSL manager and config for secure aiohttp connector
+        self.ssl_manager = SSLConfigurationManager()
+        self._ssl_config = SSLConfig(
+            verify_ssl=self.config.verify_ssl,
+            ca_bundle_path=self.config.ca_bundle_path,
+            client_cert_path=self.config.client_cert_path,
+            client_key_path=self.config.client_key_path,
+            allow_self_signed=self.config.allow_self_signed,
+            ssl_timeout=self.config.ssl_timeout,
+            auto_detect_issues=self.config.auto_detect_ssl_issues
         )
         
         # Performance metrics
@@ -93,17 +111,31 @@ class WazuhAPIClient:
         """Async context manager exit with proper cleanup."""
         if self.session:
             await self.session.close()
+            self.session = None
             logger.debug("Wazuh API client session closed")
+    
+    def _build_url(self, endpoint: str) -> str:
+        """Build API URL ensuring API version path is preserved."""
+        return f"{self.base_url}/{endpoint.lstrip('/')}"
+    
+    async def _ensure_session(self):
+        """Ensure aiohttp session exists and is open."""
+        if self.session is None or getattr(self.session, "closed", False):
+            await self._create_session()
     
     async def _create_session(self):
         """Create aiohttp session with proper configuration."""
         timeout = aiohttp.ClientTimeout(total=self.config.request_timeout_seconds)
+
+        # Build secure SSL connector args from SSL manager
+        connector_args = self.ssl_manager.get_aiohttp_connector_args(self._ssl_config)
+
         connector = aiohttp.TCPConnector(
-            ssl=self.config.verify_ssl,
             limit=self.config.max_connections,
             limit_per_host=self.config.pool_size,
             keepalive_timeout=60,
-            enable_cleanup_closed=True
+            enable_cleanup_closed=True,
+            **connector_args
         )
         
         self.session = aiohttp.ClientSession(
@@ -112,7 +144,9 @@ class WazuhAPIClient:
             headers={"User-Agent": "WazuhMCP/2.1.0"}
         )
         
-        logger.debug("Created Wazuh API session with optimized settings")
+        logger.debug("Created Wazuh API session with optimized settings and SSL configuration", extra={
+            "details": {"verify_ssl": self._ssl_config.verify_ssl, "allow_self_signed": self._ssl_config.allow_self_signed}
+        })
     
     def _is_jwt_valid(self) -> bool:
         """Check if JWT token is valid and not near expiration."""
@@ -128,51 +162,81 @@ class WazuhAPIClient:
         """Authenticate with Wazuh API and get JWT token with error recovery."""
         if not force_refresh and self._is_jwt_valid():
             return self.jwt_token
-        
+
         async def _do_authenticate() -> str:
             # Rate limit authentication attempts
             await global_rate_limiter.enforce_rate_limit("wazuh_auth")
-            
-            auth_url = urljoin(self.base_url, "/security/user/authenticate")
-            auth = aiohttp.BasicAuth(self.config.username, self.config.password)
-            
+
+            await self._ensure_session()
+
+            auth_url = self._build_url("security/user/authenticate")
+            payload = {"username": self.config.username, "password": self.config.password}
+
             request_id = f"auth_{int(time.time())}"
-            
+
             with LogContext(request_id, user_id=self.config.username):
                 logger.info("Authenticating with Wazuh API", extra={
                     "details": {"url": auth_url, "username": self.config.username}
                 })
-                
-                async with self.session.get(auth_url, auth=auth) as response:
-                    if response.status != 200:
-                        response_data = None
+
+                # Build Basic Auth header
+                basic = base64.b64encode(f"{self.config.username}:{self.config.password}".encode()).decode("ascii")
+                headers_basic = {
+                    "Authorization": f"Basic {basic}",
+                    "Content-Type": "application/json"
+                }
+
+                token: Optional[str] = None
+
+                # Attempt 1: Legacy GET with Basic header (compat) - this is the working method
+                async with self.session.get(auth_url, headers=headers_basic) as response:
+                    if response.status == 200:
                         try:
-                            response_data = await response.json()
-                        except (aiohttp.ClientError, json.JSONDecodeError, ValueError) as e:
-                            logger.warning(f"Failed to parse JSON response: {e}")
-                            response_data = {"error": "Invalid response format"}
-                        handle_api_error(response.status, response_data)
-                    
-                    data = await response.json()
-                    token = data.get("data", {}).get("token")
-                    
-                    if not token:
-                        raise AuthenticationError("JWT token not found in response")
-                    
-                    self.jwt_token = token
-                    # Set expiration to 14 minutes (Wazuh default is 15 minutes)
-                    self.jwt_expiration = datetime.utcnow() + timedelta(minutes=14)
-                    
-                    logger.info("Successfully authenticated with Wazuh API", extra={
-                        "details": {"expires_at": self.jwt_expiration.isoformat()}
-                    })
-                    
-                    return self.jwt_token
-        
+                            data = await response.json()
+                            token = data.get("data", {}).get("token") or data.get("token")
+                        except (aiohttp.ClientError, json.JSONDecodeError, ValueError):
+                            token = None
+
+                # Attempt 2: POST with Basic Auth header (no body) - per Wazuh docs
+                if not token:
+                    async with self.session.post(auth_url, headers=headers_basic) as response2:
+                        if response2.status == 200:
+                            try:
+                                data = await response2.json()
+                                token = data.get("data", {}).get("token") or data.get("token")
+                            except (aiohttp.ClientError, json.JSONDecodeError, ValueError):
+                                token = None
+
+                # Attempt 3: POST with JSON body (username/password) - some deployments accept this
+                if not token:
+                    async with self.session.post(auth_url, json=payload) as response3:
+                        if response3.status == 200:
+                            try:
+                                data = await response3.json()
+                                token = data.get("data", {}).get("token") or data.get("token")
+                            except (aiohttp.ClientError, json.JSONDecodeError, ValueError):
+                                token = None
+                        else:
+                            # Do not fail yet; we will let the final check handle failures
+                            pass
+
+                if not token:
+                    raise AuthenticationError("JWT token not found in response")
+
+                self.jwt_token = token
+                # Set expiration to 14 minutes (Wazuh default is ~15 minutes)
+                self.jwt_expiration = datetime.utcnow() + timedelta(minutes=14)
+
+                logger.info("Successfully authenticated with Wazuh API", extra={
+                    "details": {"expires_at": self.jwt_expiration.isoformat()}
+                })
+
+                return self.jwt_token
+
         try:
             return await _do_authenticate()
         except aiohttp.ClientError as e:
-            handle_connection_error(e, urljoin(self.base_url, "/security/user/authenticate"))
+            handle_connection_error(e, self._build_url("security/user/authenticate"))
         except Exception as e:
             # Use error recovery for authentication failures
             recovery_result = await error_recovery_manager.handle_error(
@@ -181,19 +245,19 @@ class WazuhAPIClient:
                 retry_func=_do_authenticate,
                 context={"username": self.config.username, "force_refresh": force_refresh}
             )
-            
+
             if recovery_result.get("success"):
                 token = recovery_result.get("data")
                 if token:
                     return token
-            
+
             logger.error(f"Authentication failed after recovery attempts: {str(e)}")
             raise AuthenticationError(f"Authentication failed: {str(e)}")
     
     async def _make_request_internal(
-        self, 
-        method: str, 
-        endpoint: str, 
+        self,
+        method: str,
+        endpoint: str,
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         retry_auth: bool = True
@@ -202,13 +266,15 @@ class WazuhAPIClient:
         # Rate limit API requests
         await global_rate_limiter.enforce_rate_limit("wazuh_api")
         
+        await self._ensure_session()
+
         token = await self.authenticate()
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
         
-        url = urljoin(self.base_url, endpoint)
+        url = self._build_url(endpoint)
         request_id = f"req_{int(time.time() * 1000)}"
         
         with LogContext(request_id):
@@ -298,13 +364,17 @@ class WazuhAPIClient:
     
     @log_performance
     async def get_alerts(
-        self, 
-        limit: int = 100, 
+        self,
+        limit: int = 100,
         offset: int = 0,
-        level: Optional[int] = None, 
+        level: Optional[int] = None,
         sort: str = "-timestamp",
         time_range: Optional[int] = None,
-        agent_id: Optional[str] = None
+        agent_id: Optional[str] = None,
+        rule_id: Optional[str] = None,
+        query: Optional[str] = None,
+        timestamp_gte: Optional[str] = None,
+        timestamp_lte: Optional[str] = None
     ) -> Dict[str, Any]:
         """Get alerts from Wazuh with validation and filtering."""
         
@@ -327,7 +397,10 @@ class WazuhAPIClient:
         if level is not None:
             params["level"] = level
         
-        if time_range:
+        # Prefer explicit timestamp range if provided
+        if timestamp_gte and timestamp_lte:
+            params["timestamp"] = f"{timestamp_gte}..{timestamp_lte}"
+        elif time_range:
             # Add time range filter (last X seconds)
             end_time = datetime.utcnow()
             start_time = end_time - timedelta(seconds=time_range)
@@ -337,6 +410,7 @@ class WazuhAPIClient:
             # Sanitize agent ID
             params["agent.id"] = sanitize_string(agent_id, 20)
         
+        # Note: rule_id and query are primarily for Indexer; Wazuh Server API may ignore them.
         logger.info(f"Fetching alerts", extra={
             "details": {"limit": params["limit"], "level": level, "agent_id": agent_id}
         })
@@ -345,28 +419,43 @@ class WazuhAPIClient:
     
     @log_performance
     async def get_agents(
-        self, 
+        self,
         status: Optional[str] = None,
         os_platform: Optional[str] = None,
-        limit: int = 500
+        limit: int = 500,
+        agents_list: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Get agent information with filtering."""
         
         params = {"limit": min(limit, 1000)}
         
         if status:
-            # Validate status
-            valid_statuses = ["active", "disconnected", "never_connected", "pending"]
-            if status in valid_statuses:
+            # Allow "all" to mean no status filter
+            valid_statuses = ["active", "disconnected", "never_connected", "pending", "all"]
+            if status == "all":
+                # Do not apply any status filter when 'all' is requested
+                pass
+            elif status in valid_statuses:
                 params["status"] = status
             else:
                 raise ValueError(f"Invalid status. Must be one of: {valid_statuses}")
         
         if os_platform:
             params["os.platform"] = sanitize_string(os_platform, 50)
+
+        if agents_list:
+            # Wazuh API supports comma-separated list via agents_list
+            sanitized = [sanitize_string(a, 20) for a in agents_list if a]
+            if sanitized:
+                params["agents_list"] = ",".join(sanitized)
         
         logger.info(f"Fetching agents", extra={
-            "details": {"status": status, "os_platform": os_platform, "limit": limit}
+            "details": {
+                "status": status,
+                "os_platform": os_platform,
+                "limit": limit,
+                "agents_list": bool(agents_list)
+            }
         })
         
         return await self._request("GET", "/agents", params=params)
@@ -420,7 +509,7 @@ class WazuhAPIClient:
         return await self._request("GET", f"/agents/{clean_agent_id}/stats/logcollector")
 
     @log_performance
-    async def get_agent_processes(self, agent_id: str) -> Dict[str, Any]:
+    async def get_agent_processes(self, agent_id: str, limit: int = 100) -> Dict[str, Any]:
         """Get running processes for a specific agent."""
         
         clean_agent_id = sanitize_string(agent_id, 20)
@@ -429,10 +518,11 @@ class WazuhAPIClient:
         
         logger.info(f"Fetching processes for agent {clean_agent_id}")
         
-        return await self._request("GET", f"/syscollector/{clean_agent_id}/processes")
+        params = {"limit": min(max(int(limit), 1), 1000)}
+        return await self._request("GET", f"/syscollector/{clean_agent_id}/processes", params=params)
 
     @log_performance
-    async def get_agent_ports(self, agent_id: str) -> Dict[str, Any]:
+    async def get_agent_ports(self, agent_id: str, limit: int = 100) -> Dict[str, Any]:
         """Get open ports for a specific agent."""
         
         clean_agent_id = sanitize_string(agent_id, 20)
@@ -441,15 +531,17 @@ class WazuhAPIClient:
         
         logger.info(f"Fetching ports for agent {clean_agent_id}")
         
-        return await self._request("GET", f"/syscollector/{clean_agent_id}/ports")
+        params = {"limit": min(max(int(limit), 1), 1000)}
+        return await self._request("GET", f"/syscollector/{clean_agent_id}/ports", params=params)
 
     @log_performance
     async def get_wazuh_stats(self, component: str, stat_type: str, agent_id: Optional[str] = None) -> Dict[str, Any]:
-        """Get statistics from Wazuh."""
-        if component == "manager":
-            endpoint = f"/manager/stats/{stat_type}"
-            logger.info(f"Fetching manager stats for {stat_type}")
-        elif component == "agent":
+        """Get statistics from Wazuh (manager and agent daemons)."""
+        component = (component or "").lower().strip()
+        stat_type = (stat_type or "").lower().strip()
+
+        # Agent stats
+        if component == "agent":
             if not agent_id:
                 raise ValueError("agent_id is required for agent stats")
             clean_agent_id = sanitize_string(agent_id, 20)
@@ -457,10 +549,34 @@ class WazuhAPIClient:
                 raise ValueError("Invalid agent ID")
             endpoint = f"/agents/{clean_agent_id}/stats/{stat_type}"
             logger.info(f"Fetching agent stats for {stat_type} on agent {clean_agent_id}")
-        else:
-            raise ValueError(f"Invalid component: {component}")
+            return await self._request("GET", endpoint)
 
-        return await self._request("GET", endpoint)
+        # Manager daemon stats (known components)
+        manager_components = {
+            "manager": "manager",          # generic manager stats (maps to /manager/stats/{type})
+            "remoted": "remoted",
+            "logcollector": "logcollector",
+            "analysisd": "analysisd",
+            "authd": "authd",
+            "wazuh-db": "wazuh-db",
+            "modulesd": "modulesd",
+            "monitord": "monitord"
+        }
+
+        # If direct manager stats (component == manager), use provided stat_type
+        if component == "manager":
+            endpoint = f"/manager/stats/{stat_type}"
+            logger.info(f"Fetching manager stats for {stat_type}")
+            return await self._request("GET", endpoint)
+
+        # Specific daemon (remoted, logcollector, etc.)
+        if component in manager_components:
+            daemon = manager_components[component]
+            endpoint = f"/manager/stats/{daemon}"
+            logger.info(f"Fetching manager daemon stats for {daemon}")
+            return await self._request("GET", endpoint)
+
+        raise ValueError(f"Invalid component: {component}")
 
     @log_performance
     async def search_wazuh_logs(self, log_source: str, query: str, limit: int = 100, agent_id: Optional[str] = None) -> Dict[str, Any]:
@@ -556,6 +672,25 @@ class WazuhAPIClient:
         logger.warning(f"Restarting agent {clean_agent_id}")
         return await self._request("PUT", f"/agents/{clean_agent_id}/restart")
     
+    @log_performance
+    async def get_agent_config(self, agent_id: str) -> Dict[str, Any]:
+        """Get configuration/information for a specific agent.
+
+        Tries the detailed config endpoint first and falls back to basic agent info
+        for environments where component-specific config path is required.
+        """
+        clean_agent_id = sanitize_string(agent_id, 20)
+        if not clean_agent_id:
+            raise ValueError("Invalid agent ID")
+
+        # Attempt the config endpoint; if it fails (e.g., requires component),
+        # fall back to the agent info endpoint which is widely supported.
+        try:
+            return await self._request("GET", f"/agents/{clean_agent_id}/config")
+        except Exception:
+            logger.info("Falling back to agent info for configuration retrieval")
+            return await self._request("GET", f"/agents/{clean_agent_id}")
+
     def get_metrics(self) -> Dict[str, Any]:
         """Get client performance metrics."""
         return {

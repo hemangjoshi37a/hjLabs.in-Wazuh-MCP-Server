@@ -183,18 +183,17 @@ class FileHash(BaseModel):
         
         return v
     
-    def __init__(self, **data):
-        """Initialize with hash type detection."""
-        super().__init__(**data)
-        if not self.hash_type and self.hash_value:
-            # Set hash type based on length
+    def model_post_init(self, __context):
+        """Post-initialization to set hash type based on hash value."""
+        if self.hash_value:
+            # Always set hash type based on length (overrides any provided value)
             length = len(self.hash_value)
             if length == 32:
-                self.hash_type = "md5"
+                object.__setattr__(self, 'hash_type', "md5")
             elif length == 40:
-                self.hash_type = "sha1"
+                object.__setattr__(self, 'hash_type', "sha1")
             elif length == 64:
-                self.hash_type = "sha256"
+                object.__setattr__(self, 'hash_type', "sha256")
 
 
 def validate_alert_query(params: Dict[str, Any]) -> AlertQuery:

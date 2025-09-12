@@ -20,7 +20,9 @@ class BaseTool(ABC):
         self.server = server_instance
         self.config = server_instance.config
         self.logger = get_logger(f"{self.__class__.__module__}.{self.__class__.__name__}")
-        self.api_client = server_instance.api_client
+        # Prefer ClientManager (auto-routes to Indexer/Server) when available
+        self.client_manager = getattr(server_instance, "client_manager", None)
+        self.api_client = self.client_manager if self.client_manager is not None else getattr(server_instance, "api_client", None)
         self.security_analyzer = server_instance.security_analyzer
         self.compliance_analyzer = server_instance.compliance_analyzer
     

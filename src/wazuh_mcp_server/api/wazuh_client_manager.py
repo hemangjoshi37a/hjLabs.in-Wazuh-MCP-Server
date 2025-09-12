@@ -10,6 +10,7 @@ from wazuh_mcp_server.config import WazuhConfig
 from wazuh_mcp_server.utils import get_logger
 from wazuh_mcp_server.api.wazuh_client import WazuhAPIClient
 from wazuh_mcp_server.api.wazuh_indexer_client import WazuhIndexerClient
+from wazuh_mcp_server.utils.exceptions import APIError
 
 logger = get_logger(__name__)
 
@@ -98,13 +99,18 @@ class WazuhClientManager:
         )
     
     async def get_alerts(
-        self, 
-        limit: int = 100, 
+        self,
+        limit: int = 100,
         offset: int = 0,
-        level: Optional[int] = None, 
+        level: Optional[int] = None,
         sort: str = "-timestamp",
         time_range: Optional[int] = None,
-        agent_id: Optional[str] = None
+        agent_id: Optional[str] = None,
+        rule_id: Optional[str] = None,
+        query: Optional[str] = None,
+        timestamp_gte: Optional[str] = None,
+        timestamp_lte: Optional[str] = None,
+        level_gte: bool = False
     ) -> Dict[str, Any]:
         """Get alerts using appropriate API (Server or Indexer)."""
         
@@ -116,7 +122,12 @@ class WazuhClientManager:
                 level=level,
                 sort=sort,
                 time_range=time_range,
-                agent_id=agent_id
+                agent_id=agent_id,
+                rule_id=rule_id,
+                query=query,
+                timestamp_gte=timestamp_gte,
+                timestamp_lte=timestamp_lte,
+                level_gte=level_gte
             )
         else:
             logger.debug("Using Server API for alerts")
@@ -127,19 +138,35 @@ class WazuhClientManager:
                     level=level,
                     sort=sort,
                     time_range=time_range,
-                    agent_id=agent_id
+                    agent_id=agent_id,
+                    rule_id=rule_id,
+                    query=query,
+                    timestamp_gte=timestamp_gte,
+                    timestamp_lte=timestamp_lte
                 )
             except Exception as e:
-                # If Server API fails and we have Indexer, try fallback
-                if self.indexer_client and "404" in str(e):
-                    logger.warning("Server API alerts endpoint not found, falling back to Indexer API")
+                # If Server API fails and we have Indexer, try fallback on 404 specifically
+                should_fallback = False
+                if isinstance(e, APIError) and getattr(e, "status_code", None) == 404:
+                    should_fallback = True
+                elif "404" in str(e):
+                    # Backward-compatible string check
+                    should_fallback = True
+
+                if self.indexer_client and should_fallback:
+                    logger.warning("Server API alerts endpoint not found (404). Falling back to Indexer API")
                     return await self.indexer_client.search_alerts(
                         limit=limit,
                         offset=offset,
                         level=level,
                         sort=sort,
                         time_range=time_range,
-                        agent_id=agent_id
+                        agent_id=agent_id,
+                        rule_id=rule_id,
+                        query=query,
+                        timestamp_gte=timestamp_gte,
+                        timestamp_lte=timestamp_lte,
+                        level_gte=level_gte
                     )
                 raise
     
@@ -154,16 +181,23 @@ class WazuhClientManager:
             try:
                 return await self.server_client.get_agent_vulnerabilities(agent_id)
             except Exception as e:
-                # If Server API fails and we have Indexer, try fallback
-                if self.indexer_client and "404" in str(e):
-                    logger.warning("Server API vulnerability endpoint not found, falling back to Indexer API")
+                # If Server API fails and we have Indexer, try fallback on 404 specifically
+                should_fallback = False
+                if isinstance(e, APIError) and getattr(e, "status_code", None) == 404:
+                    should_fallback = True
+                elif "404" in str(e):
+                    should_fallback = True
+
+                if self.indexer_client and should_fallback:
+                    logger.warning("Server API vulnerability endpoint not found (404). Falling back to Indexer API")
                     return await self.indexer_client.search_vulnerabilities(agent_id=agent_id)
                 raise
     
     async def search_vulnerabilities(
-        self, 
+        self,
         agent_id: Optional[str] = None,
         cve_id: Optional[str] = None,
+        severity: Optional[str] = None,
         limit: int = 100
     ) -> Dict[str, Any]:
         """Search vulnerabilities using Indexer API."""
@@ -173,6 +207,7 @@ class WazuhClientManager:
         return await self.indexer_client.search_vulnerabilities(
             agent_id=agent_id,
             cve_id=cve_id,
+            severity=severity,
             limit=limit
         )
     
@@ -184,6 +219,14 @@ class WazuhClientManager:
     async def get_rules(self, **kwargs) -> Dict[str, Any]:
         """Get rules from Server API."""
         return await self.server_client.get_rules(**kwargs)
+
+    async def get_api_info(self) -> Dict[str, Any]:
+        """Get basic API info (version, title)."""
+        try:
+            return await self.server_client._request("GET", "/")
+        except Exception as e:
+            logger.warning(f"Failed to get API info: {e}")
+            return {"error": str(e)}
     
     async def get_decoders(self, **kwargs) -> Dict[str, Any]:
         """Get decoders from Server API."""
@@ -193,13 +236,13 @@ class WazuhClientManager:
         """Get agent stats from Server API."""
         return await self.server_client.get_agent_stats(agent_id)
     
-    async def get_agent_processes(self, agent_id: str) -> Dict[str, Any]:
+    async def get_agent_processes(self, agent_id: str, limit: int = 100) -> Dict[str, Any]:
         """Get agent processes from Server API."""
-        return await self.server_client.get_agent_processes(agent_id)
+        return await self.server_client.get_agent_processes(agent_id, limit)
     
-    async def get_agent_ports(self, agent_id: str) -> Dict[str, Any]:
+    async def get_agent_ports(self, agent_id: str, limit: int = 100) -> Dict[str, Any]:
         """Get agent ports from Server API."""
-        return await self.server_client.get_agent_ports(agent_id)
+        return await self.server_client.get_agent_ports(agent_id, limit)
     
     async def get_wazuh_stats(self, component: str, stat_type: str, agent_id: Optional[str] = None) -> Dict[str, Any]:
         """Get Wazuh statistics from Server API."""
@@ -535,7 +578,7 @@ class WazuhClientManager:
             health_result = await self.health_check()
             
             # Test basic API call
-            info_result = await self.server_client.get("/")
+            info_result = await self.server_client._request("GET", "/")
             
             return {
                 "data": {
