@@ -82,8 +82,14 @@ Add to Claude Desktop config:
 {
   "mcpServers": {
     "wazuh": {
-      "command": "wazuh-mcp-server",
-      "args": []
+      "command": "python",
+      "args": [
+        "/home/hemang/Documents/GitHub/Wazuh-MCP-Server/src/wazuh_mcp_server/main.py"
+      ],
+      "env": {
+        "PYTHONPATH": "/home/hemang/Documents/GitHub/Wazuh-MCP-Server/src"
+      },
+      "cwd": "/home/hemang/Documents/GitHub/Wazuh-MCP-Server"
     }
   }
 }
