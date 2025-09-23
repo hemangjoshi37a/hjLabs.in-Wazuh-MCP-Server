@@ -9,8 +9,8 @@ import sys
 import os
 
 # Clean imports within the package
-from wazuh_mcp_server.config import ComplianceFramework
-from wazuh_mcp_server.utils.logging import get_logger
+from ...config import ComplianceFramework
+from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
 

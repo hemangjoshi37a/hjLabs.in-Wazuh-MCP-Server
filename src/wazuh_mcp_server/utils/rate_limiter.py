@@ -5,7 +5,7 @@ import asyncio
 from typing import Dict, Optional
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from .exceptions import RateLimitError
+from ..utils.exceptions import RateLimitError
 
 
 @dataclass

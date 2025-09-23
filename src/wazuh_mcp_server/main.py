@@ -66,7 +66,7 @@ class WazuhMCPServer:
 
     def __init__(self):
         # Import only lightweight config and logger
-        from wazuh_mcp_server.config import WazuhConfig
+        from .config import WazuhConfig
         from wazuh_mcp_server.utils import get_logger
 
         # Allow tests to patch these symbols without importing heavy deps
@@ -359,7 +359,7 @@ class WazuhMCPServer:
 
     # Alert summary handler expected by tests/test_alert_summary.py
     async def _handle_get_wazuh_alert_summary(self, arguments: dict):
-        from wazuh_mcp_server.utils.validation import validate_alert_summary_query
+        from .utils.validation import validate_alert_summary_query
 
         query = validate_alert_summary_query(arguments)
         time_params = self._calculate_time_range(query)
@@ -614,8 +614,8 @@ def run_connection_check() -> None:
     
     try:
         # Import and run connection validator
-        from wazuh_mcp_server.scripts.connection_validator import ConnectionValidator
-        from wazuh_mcp_server.config import WazuhConfig
+        from .scripts.connection_validator import ConnectionValidator
+        from .config import WazuhConfig
         
         async def check():
             config = WazuhConfig.from_env()
@@ -646,4 +646,4 @@ def run_connection_check() -> None:
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    main()   main()   main()

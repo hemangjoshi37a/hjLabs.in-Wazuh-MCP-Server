@@ -10,8 +10,8 @@ import aiohttp
 import base64
 
 # Clean absolute imports within the package
-from wazuh_mcp_server.config import WazuhConfig
-from wazuh_mcp_server.utils import (
+from ..config import WazuhConfig
+from ..utils import (
     get_logger,
     AuthenticationError,
     AuthorizationError,
@@ -29,7 +29,7 @@ from wazuh_mcp_server.utils import (
 
 # Import additional utilities that may not be available
 try:
-    from wazuh_mcp_server.utils.logging import log_performance, LogContext
+    from ..utils.logging import log_performance, LogContext
 except ImportError:
     # Fallback implementations
     def log_performance(func):
@@ -44,7 +44,7 @@ except ImportError:
             pass
 
 try:
-    from wazuh_mcp_server.utils.error_recovery import error_recovery_manager
+    from ..utils.error_recovery import error_recovery_manager
 except ImportError:
     # Fallback error recovery
     class _MinimalErrorRecovery:
@@ -56,7 +56,7 @@ except ImportError:
     error_recovery_manager = _MinimalErrorRecovery()
 
 # SSL/TLS configuration manager for secure connections
-from wazuh_mcp_server.utils.ssl_config import SSLConfigurationManager, SSLConfig
+from ..utils.ssl_config import SSLConfigurationManager, SSLConfig
 
 logger = get_logger(__name__)
 

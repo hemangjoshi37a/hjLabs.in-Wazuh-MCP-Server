@@ -17,7 +17,7 @@ try:
     from fastmcp import FastMCP
 except ImportError:
     # Use stub if FastMCP not available
-    from wazuh_mcp_server.fastmcp_stub import FastMCP
+    from .fastmcp_stub import FastMCP
 
 try:
     from pydantic import BaseModel, Field
@@ -32,14 +32,14 @@ except ImportError:
         return default
 
 # Import Wazuh components
-from wazuh_mcp_server.config import WazuhConfig
-from wazuh_mcp_server.api.wazuh_client_manager import WazuhClientManager
-from wazuh_mcp_server.analyzers import SecurityAnalyzer, ComplianceAnalyzer
-from wazuh_mcp_server.utils import setup_logging, get_logger
-from wazuh_mcp_server.__version__ import __version__
+from ..config import WazuhConfig
+from ..api.wazuh_client_manager import WazuhClientManager
+from .analyzers import SecurityAnalyzer, ComplianceAnalyzer
+from ..utils import setup_logging, get_logger
+from ..__version__ import __version__
 
 # Export compatibility class for tests importing from wazuh_mcp_server.server
-from wazuh_mcp_server.main import WazuhMCPServer
+from ..main import WazuhMCPServer
 # Initialize logger
 logger = get_logger(__name__)
 
@@ -100,7 +100,7 @@ async def initialize_server():
         logger.info(f"📋 Loaded configuration for Wazuh host: {config.host}:{config.port}")
         
         # Run comprehensive health checks
-        from wazuh_mcp_server.utils.health_checks import run_startup_health_checks
+        from ..utils.health_checks import run_startup_health_checks
         
         logger.info("🏥 Running startup health checks...")
         is_healthy = await run_startup_health_checks(config)

@@ -16,7 +16,7 @@ except ImportError:
 
 # Import cross-platform utilities
 try:
-    from .utils.platform_utils import get_environment_variable, normalize_path, get_config_dir
+    from wazuh_mcp_server.utils.platform_utils import get_environment_variable, normalize_path, get_config_dir
 except ImportError:
     # Fallback if platform_utils not available
     def get_environment_variable(var_name: str, default: Optional[str] = None) -> Optional[str]:

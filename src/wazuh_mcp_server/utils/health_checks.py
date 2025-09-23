@@ -16,7 +16,7 @@ import logging
 
 from ..config import WazuhConfig
 from ..api.wazuh_client_manager import WazuhClientManager
-from .logging import get_logger
+from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -429,4 +429,4 @@ async def run_startup_health_checks(config: WazuhConfig) -> bool:
         except Exception as e:
             logger.error(f"Failed to save health report: {e}")
     
-    return is_healthy
+    return is_healthy_healthy

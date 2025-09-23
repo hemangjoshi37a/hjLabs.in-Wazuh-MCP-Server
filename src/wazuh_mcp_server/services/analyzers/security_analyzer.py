@@ -12,7 +12,7 @@ from enum import Enum
 import sys
 
 # Clean import within the package
-from wazuh_mcp_server.utils.logging import get_logger
+from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
 

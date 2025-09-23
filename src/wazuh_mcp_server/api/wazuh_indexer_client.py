@@ -10,18 +10,18 @@ import json
 import sys
 
 # Clean imports within the package
-from wazuh_mcp_server.config import WazuhConfig
-from wazuh_mcp_server.utils.exceptions import (
+from ..config import WazuhConfig
+from ..utils.exceptions import (
     AuthenticationError, AuthorizationError, ConnectionError,
     APIError, RateLimitError, handle_api_error, handle_connection_error
 )
-from wazuh_mcp_server.utils.logging import get_logger, log_performance, LogContext
+from ..utils.logging import get_logger, log_performance, LogContext
 from wazuh_mcp_server.utils.rate_limiter import global_rate_limiter, RateLimitConfig
 from wazuh_mcp_server.utils.validation import validate_alert_query, sanitize_string
 from wazuh_mcp_server.utils.production_error_handler import production_error_handler
 from wazuh_mcp_server.utils.ssl_config import SSLConfigurationManager, SSLConfig
 from wazuh_mcp_server.utils.error_recovery import error_recovery_manager
-from wazuh_mcp_server.api.wazuh_field_mappings import WazuhFieldMapper, WazuhVersion
+from .wazuh_field_mappings import WazuhFieldMapper, WazuhVersion
 
 logger = get_logger(__name__)
 
@@ -629,4 +629,4 @@ class WazuhIndexerClient:
             "error_count": self.error_count,
             "error_rate": (self.error_count / max(self.request_count, 1)) * 100,
             "base_url": self.base_url
-        }
+        }    }

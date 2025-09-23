@@ -6,7 +6,7 @@ import ssl
 import json
 import base64
 from typing import Optional, Dict, Any, List
-from .config import WazuhConfig
+from ..config import WazuhConfig
 
 class WazuhClient:
     """Wazuh API client using Basic Auth (proven working method)."""

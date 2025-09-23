@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 try:
     from .logging import get_logger
-    from .exceptions import (
+    from ..utils.exceptions import (
         WazuhMCPError, APIError, ConnectionError, AuthenticationError,
         AuthorizationError, RateLimitError
     )

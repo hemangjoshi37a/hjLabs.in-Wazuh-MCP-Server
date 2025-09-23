@@ -6,11 +6,11 @@ from packaging import version
 from datetime import datetime
 
 # Clean absolute imports within the package
-from wazuh_mcp_server.config import WazuhConfig
-from wazuh_mcp_server.utils import get_logger
-from wazuh_mcp_server.api.wazuh_client import WazuhAPIClient
-from wazuh_mcp_server.api.wazuh_indexer_client import WazuhIndexerClient
-from wazuh_mcp_server.utils.exceptions import APIError
+from ..config import WazuhConfig
+from ..utils import get_logger
+from .wazuh_client import WazuhAPIClient
+from .wazuh_indexer_client import WazuhIndexerClient
+from ..utils.exceptions import APIError
 
 logger = get_logger(__name__)
 
